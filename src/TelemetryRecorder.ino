@@ -14,7 +14,7 @@ const int i2cSDA = D4; //i2c SDA pin
 const int i2cSCL = D2; //i2c SCL pin
 
 //Declare Variables
-const long logInterval = 100; //interval in milisec to log/stream data
+const long logInterval = 60; //interval in milisec to log/stream data
 long lastLogTime = 0;
 bool ledState = 0;
 int wifiRetry;
@@ -60,7 +60,7 @@ void loop()
 {
   getMPU9250values();
 
-  stringOne = String((int)millis() + ",");
+  stringOne = String(millis()) + ",";
   stringOne = stringOne + String((int)1000*myIMU.ax) + "," + String((int)1000*myIMU.ay) + "," + String((int)1000*myIMU.az) + ",";
   stringOne = stringOne + String(myIMU.gx) + "," + String(myIMU.gy) + "," + String(myIMU.gz) + ",";
   stringOne = stringOne + String(myIMU.mx) + "," + String(myIMU.my) + "," + String(myIMU.mz);
