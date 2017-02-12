@@ -7,21 +7,28 @@
 #include <config.h>
 
 // Pin definitions
-int intPin = 12;  // These can be changed, 2 and 3 are the Arduinos ext int pins
-int myLed  = 13;  // Set up pin 13 led for toggling
-
-char incomingPacket[255];
-int a;
+const int intPin = D6;  // These can be changed, 2 and 3 are the Arduinos ext int pins
+const int outLed = D1; //Led used for signaling stuff
 const int chipSelect = D8;  //used for CS SDcard
-bool stream = 1;
-IPAddress IP_Remote(172, 16, 0, 10);
-unsigned int localUdpPort = 4210;
-long logInterval = 100;
+const int i2cSDA = D4; //i2c SDA pin
+const int i2cSCL = D2; //i2c SCL pin
+
+//Declare Variables
+const long logInterval = 100; //interval in milisec to log/stream data
 long lastLogTime = 0;
+bool ledState = 0;
+int wifiRetry;
+String stringOne;
+char charBuf[96];
 
-#define AHRS true         // Set to false for basic data read
-#define SerialDebug false  // Set to true to get Serial output for debugging
+//Configuration parameters:
+const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream data to
+const unsigned int localUdpPort = 4210; //UDP port to stream data
+const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
+const bool logToSD = 1; //if set to 1 start logging data to SD card
+#define SerialDebug true  // Set to true to get Serial output for debugging
 
+//Initialize libraries
 WiFiUDP Udp;
 MPU9250 myIMU;
 // set up variables using the SD utility library functions:
@@ -31,28 +38,81 @@ SdFile root;
 
 void setup()
 {
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  Serial.print("Connected, IP address: ");
-  Serial.println(WiFi.localIP());
-
-  Wire.begin(2,4);
-  // TWBR = 12;  // 400 kbit/sec I2C speed
   Serial.begin(38400);
+  pinMode(outLed, OUTPUT);
+  connWiFi();
+  Wire.begin(i2cSDA,i2cSCL);
+
 
   // Set up the interrupt pin, its set as active high, push-pull
   pinMode(intPin, INPUT);
   digitalWrite(intPin, LOW);
-  pinMode(myLed, OUTPUT);
-  digitalWrite(myLed, HIGH);
+  pinMode(outLed, OUTPUT);
+  digitalWrite(outLed, HIGH);
 
+  startMPU9250();
+
+  initSDcard();
+
+}
+
+void loop()
+{
+  getMPU9250values();
+
+  stringOne = String((int)millis() + ",");
+  stringOne = stringOne + String((int)1000*myIMU.ax) + "," + String((int)1000*myIMU.ay) + "," + String((int)1000*myIMU.az) + ",";
+  stringOne = stringOne + String(myIMU.gx) + "," + String(myIMU.gy) + "," + String(myIMU.gz) + ",";
+  stringOne = stringOne + String(myIMU.mx) + "," + String(myIMU.my) + "," + String(myIMU.mz);
+  stringOne.toCharArray(charBuf, 96);
+
+  if (millis() - lastLogTime >= logInterval) {
+    if (logToSD) {
+      File dataFile = SD.open("telem.txt", FILE_WRITE);
+      dataFile.println(charBuf);
+      dataFile.close();
+    }
+    //start UDP stream if active
+    if (stream) {
+      Udp.beginPacket(IP_Remote,4445);
+      Udp.write(charBuf);
+      Udp.endPacket();
+      }
+    lastLogTime = millis();
+    toggleLed();
+  }
+}
+
+
+//Start functions definition
+void connWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting");
+  for (wifiRetry = 0; wifiRetry < 4; wifiRetry++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiRetry = 0;
+      Serial.println();
+      Serial.print("Connected, IP address: ");
+      Serial.println(WiFi.localIP());
+      break;
+    }
+    delay(500);
+    Serial.print(".");
+  }
+}
+
+void toggleLed() {
+  if (ledState) {
+    digitalWrite(outLed, HIGH);
+    ledState = 0;
+  }
+  else {
+    digitalWrite(outLed, LOW);
+    ledState = 1;
+  }
+}
+
+void startMPU9250 () {
   // Read the WHO_AM_I register, this is a good test of communication
   byte c = myIMU.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
   Serial.print("MPU9250 "); Serial.print("I AM "); Serial.print(c, HEX);
@@ -114,80 +174,9 @@ void setup()
   }
   delay(3000);
   Serial.println("ax,ay,az,gx,gy,gz,mx,my,mz,q0,qx,qy,qz,yaw,pitch,roll,rate");
-
-  Serial.print("\nInitializing SD card...");
-
-  // we'll use the initialization code from the utility libraries
-  // since we're just testing if the card is working!
-  if (!card.init(SPI_HALF_SPEED, chipSelect)) {
-    Serial.println("initialization failed. Things to check:");
-    Serial.println("* is a card inserted?");
-    Serial.println("* is your wiring correct?");
-    Serial.println("* did you change the chipSelect pin to match your shield or module?");
-    return;
-  } else {
-    Serial.println("Wiring is correct and a card is present.");
-  }
-
-  // print the type of card
-  Serial.print("\nCard type: ");
-  switch (card.type()) {
-    case SD_CARD_TYPE_SD1:
-      Serial.println("SD1");
-      break;
-    case SD_CARD_TYPE_SD2:
-      Serial.println("SD2");
-      break;
-    case SD_CARD_TYPE_SDHC:
-      Serial.println("SDHC");
-      break;
-    default:
-      Serial.println("Unknown");
-  }
-
-  // Now we will try to open the 'volume'/'partition' - it should be FAT16 or FAT32
-  if (!volume.init(card)) {
-    Serial.println("Could not find FAT16/FAT32 partition.\nMake sure you've formatted the card");
-    return;
-  }
-
-
-  // print the type and size of the first FAT-type volume
-  uint32_t volumesize;
-  Serial.print("\nVolume type is FAT");
-  Serial.println(volume.fatType(), DEC);
-  Serial.println();
-
-  volumesize = volume.blocksPerCluster();    // clusters are collections of blocks
-  volumesize *= volume.clusterCount();       // we'll have a lot of clusters
-  volumesize *= 512;                            // SD card blocks are always 512 bytes
-  Serial.print("Volume size (bytes): ");
-  Serial.println(volumesize);
-  Serial.print("Volume size (Kbytes): ");
-  volumesize /= 1024;
-  Serial.println(volumesize);
-  Serial.print("Volume size (Mbytes): ");
-  volumesize /= 1024;
-  Serial.println(volumesize);
-
-
-  Serial.println("\nFiles found on the card (name, date and size in bytes): ");
-  root.openRoot(volume);
-
-  // list all files in the card with date and size
-  root.ls(LS_R | LS_DATE | LS_SIZE);
-
-  if (!SD.begin(chipSelect)) {
-   Serial.println("Card failed, or not present");
-   // don't do anything more:
-   return;
- }
- Serial.println("card initialized.");
-
 }
 
-void loop()
-{
+void getMPU9250values() {
   // If intPin goes high, all data registers have new data
   // On interrupt, check if data ready interrupt
   if (myIMU.readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01)
@@ -235,181 +224,157 @@ void loop()
   // Must be called before updating quaternions!
   myIMU.updateTime();
 
-  // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of
-  // the magnetometer; the magnetometer z-axis (+ down) is opposite to z-axis
-  // (+ up) of accelerometer and gyro! We have to make some allowance for this
-  // orientationmismatch in feeding the output to the quaternion filter. For the
-  // MPU-9250, we have chosen a magnetic rotation that keeps the sensor forward
-  // along the x-axis just like in the LSM9DS0 sensor. This rotation can be
-  // modified to allow any convenient orientation convention. This is ok by
-  // aircraft orientation standards! Pass gyro rate as rad/s
-//  MadgwickQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f,  my,  mx, mz);
   MahonyQuaternionUpdate(myIMU.ax, myIMU.ay, myIMU.az, myIMU.gx*DEG_TO_RAD,
                          myIMU.gy*DEG_TO_RAD, myIMU.gz*DEG_TO_RAD, myIMU.my,
                          myIMU.mx, myIMU.mz, myIMU.deltat);
 
-  if (!AHRS)
+
+  // Serial print and/or display at 0.5 s rate independent of data rates
+  myIMU.delt_t = millis() - myIMU.count;
+
+  // print to serial once per half-second independent of read rate
+  if (myIMU.delt_t > 500)
   {
-    myIMU.delt_t = millis() - myIMU.count;
-    if (myIMU.delt_t > 500)
+    if(SerialDebug)
     {
-      if(SerialDebug)
-      {
-        // Print acceleration values in milligs!
-        Serial.print("X-acceleration: "); Serial.print(1000*myIMU.ax);
-        Serial.print(" mg ");
-        Serial.print("Y-acceleration: "); Serial.print(1000*myIMU.ay);
-        Serial.print(" mg ");
-        Serial.print("Z-acceleration: "); Serial.print(1000*myIMU.az);
-        Serial.println(" mg ");
-
-        // Print gyro values in degree/sec
-        Serial.print("X-gyro rate: "); Serial.print(myIMU.gx, 3);
-        Serial.print(" degrees/sec ");
-        Serial.print("Y-gyro rate: "); Serial.print(myIMU.gy, 3);
-        Serial.print(" degrees/sec ");
-        Serial.print("Z-gyro rate: "); Serial.print(myIMU.gz, 3);
-        Serial.println(" degrees/sec");
-
-        // Print mag values in degree/sec
-        Serial.print("X-mag field: "); Serial.print(myIMU.mx);
-        Serial.print(" mG ");
-        Serial.print("Y-mag field: "); Serial.print(myIMU.my);
-        Serial.print(" mG ");
-        Serial.print("Z-mag field: "); Serial.print(myIMU.mz);
-        Serial.println(" mG");
-
-        myIMU.tempCount = myIMU.readTempData();  // Read the adc values
-        // Temperature in degrees Centigrade
-        myIMU.temperature = ((float) myIMU.tempCount) / 333.87 + 21.0;
-        // Print temperature in degrees Centigrade
-        Serial.print("Temperature is ");  Serial.print(myIMU.temperature, 1);
-        Serial.println(" degrees C");
-      }
-      myIMU.count = millis();
-      digitalWrite(myLed, !digitalRead(myLed));  // toggle led
-    } // if (myIMU.delt_t > 500)
-  } // if (!AHRS)
-  else
-  {
-    // Serial print and/or display at 0.5 s rate independent of data rates
-    myIMU.delt_t = millis() - myIMU.count;
-
-    // update LCD once per half-second independent of read rate
-    if (myIMU.delt_t > 500)
+      Serial.print((int)1000*myIMU.ax);
+      Serial.print("  ");
+      Serial.print((int)1000*myIMU.ay);
+      Serial.print("  ");
+      Serial.print((int)1000*myIMU.az);
+      Serial.print("  | ");
+      Serial.print(myIMU.gx, 2);
+      Serial.print("  ");
+      Serial.print(myIMU.gy, 2);
+      Serial.print("  ");
+      Serial.print(myIMU.gz, 2);
+      Serial.print("  | ");
+      Serial.print((int)myIMU.mx);
+      Serial.print("  ");
+      Serial.print((int)myIMU.my);
+      Serial.print("  ");
+      Serial.print((int)myIMU.mz);
+      Serial.print("  |  ");
+      Serial.print(*getQ());
+      Serial.print("  ");
+      Serial.print(*(getQ() + 1));
+      Serial.print("  ");
+      Serial.print(*(getQ() + 2));
+      Serial.print("  ");
+      Serial.print(*(getQ() + 3));
+      Serial.print("  |  ");
+      Serial.print(myIMU.yaw, 2);
+      Serial.print("  ");
+      Serial.print(myIMU.pitch, 2);
+      Serial.print("  ");
+      Serial.print(myIMU.roll, 2);
+      Serial.print("  ");
+      Serial.println((float)myIMU.sumCount/myIMU.sum, 2);
+      Serial.printf("settings heap size: %u\n", ESP.getFreeHeap());
+    }
+    myIMU.yaw   = atan2(2.0f * (*(getQ()+1) * *(getQ()+2) + *getQ() *
+                  *(getQ()+3)), *getQ() * *getQ() + *(getQ()+1) * *(getQ()+1)
+                  - *(getQ()+2) * *(getQ()+2) - *(getQ()+3) * *(getQ()+3));
+    myIMU.pitch = -asin(2.0f * (*(getQ()+1) * *(getQ()+3) - *getQ() *
+                  *(getQ()+2)));
+    myIMU.roll  = atan2(2.0f * (*getQ() * *(getQ()+1) + *(getQ()+2) *
+                  *(getQ()+3)), *getQ() * *getQ() - *(getQ()+1) * *(getQ()+1)
+                  - *(getQ()+2) * *(getQ()+2) + *(getQ()+3) * *(getQ()+3));
+    myIMU.pitch *= RAD_TO_DEG;
+    myIMU.yaw   *= RAD_TO_DEG;
+    // Declination of SparkFun Electronics (40°05'26.6"N 105°11'05.9"W) is
+    // 	8° 30' E  ± 0° 21' (or 8.5°) on 2016-07-19
+    // - http://www.ngdc.noaa.gov/geomag-web/#declination
+    myIMU.yaw   -= 8.5;
+    myIMU.roll  *= RAD_TO_DEG;
+    if(SerialDebug)
     {
-      if(SerialDebug)
-      {
-        Serial.print((int)1000*myIMU.ax);
-        Serial.print("  ");
-        Serial.print((int)1000*myIMU.ay);
-        Serial.print("  ");
-        Serial.print((int)1000*myIMU.az);
-        Serial.print("  | ");
-        Serial.print(myIMU.gx, 2);
-        Serial.print("  ");
-        Serial.print(myIMU.gy, 2);
-        Serial.print("  ");
-        Serial.print(myIMU.gz, 2);
-        Serial.print("  | ");
-        Serial.print((int)myIMU.mx);
-        Serial.print("  ");
-        Serial.print((int)myIMU.my);
-        Serial.print("  ");
-        Serial.print((int)myIMU.mz);
-        Serial.print("  |  ");
-        Serial.print(*getQ());
-        Serial.print("  ");
-        Serial.print(*(getQ() + 1));
-        Serial.print("  ");
-        Serial.print(*(getQ() + 2));
-        Serial.print("  ");
-        Serial.print(*(getQ() + 3));
-        Serial.print("  |  ");
-        Serial.print(myIMU.yaw, 2);
-        Serial.print("  ");
-        Serial.print(myIMU.pitch, 2);
-        Serial.print("  ");
-        Serial.print(myIMU.roll, 2);
-        Serial.print("  ");
-        Serial.println((float)myIMU.sumCount/myIMU.sum, 2);
-      }
+      Serial.print("Yaw, Pitch, Roll: ");
+      Serial.print(myIMU.yaw, 2);
+      Serial.print(", ");
+      Serial.print(myIMU.pitch, 2);
+      Serial.print(", ");
+      Serial.println(myIMU.roll, 2);
+      Serial.print("rate = ");
+      Serial.print((float)myIMU.sumCount/myIMU.sum, 2);
+      Serial.println(" Hz");
+    }
+    myIMU.count = millis();
+    myIMU.sumCount = 0;
+    myIMU.sum = 0;
 
-// Define output variables from updated quaternion---these are Tait-Bryan
-// angles, commonly used in aircraft orientation. In this coordinate system,
-// the positive z-axis is down toward Earth. Yaw is the angle between Sensor
-// x-axis and Earth magnetic North (or true North if corrected for local
-// declination, looking down on the sensor positive yaw is counterclockwise.
-// Pitch is angle between sensor x-axis and Earth ground plane, toward the
-// Earth is positive, up toward the sky is negative. Roll is angle between
-// sensor y-axis and Earth ground plane, y-axis up is positive roll. These
-// arise from the definition of the homogeneous rotation matrix constructed
-// from quaternions. Tait-Bryan angles as well as Euler angles are
-// non-commutative; that is, the get the correct orientation the rotations
-// must be applied in the correct order which for this configuration is yaw,
-// pitch, and then roll.
-// For more see
-// http://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
-// which has additional links.
-      myIMU.yaw   = atan2(2.0f * (*(getQ()+1) * *(getQ()+2) + *getQ() *
-                    *(getQ()+3)), *getQ() * *getQ() + *(getQ()+1) * *(getQ()+1)
-                    - *(getQ()+2) * *(getQ()+2) - *(getQ()+3) * *(getQ()+3));
-      myIMU.pitch = -asin(2.0f * (*(getQ()+1) * *(getQ()+3) - *getQ() *
-                    *(getQ()+2)));
-      myIMU.roll  = atan2(2.0f * (*getQ() * *(getQ()+1) + *(getQ()+2) *
-                    *(getQ()+3)), *getQ() * *getQ() - *(getQ()+1) * *(getQ()+1)
-                    - *(getQ()+2) * *(getQ()+2) + *(getQ()+3) * *(getQ()+3));
-      myIMU.pitch *= RAD_TO_DEG;
-      myIMU.yaw   *= RAD_TO_DEG;
-      // Declination of SparkFun Electronics (40°05'26.6"N 105°11'05.9"W) is
-      // 	8° 30' E  ± 0° 21' (or 8.5°) on 2016-07-19
-      // - http://www.ngdc.noaa.gov/geomag-web/#declination
-      myIMU.yaw   -= 8.5;
-      myIMU.roll  *= RAD_TO_DEG;
-
-      if(SerialDebug)
-      {
-        //Serial.print("Yaw, Pitch, Roll: ");
-        //Serial.print(myIMU.yaw, 2);
-        //Serial.print(", ");
-        //Serial.print(myIMU.pitch, 2);
-        //Serial.print(", ");
-        //Serial.println(myIMU.roll, 2);
-
-        //Serial.print("rate = ");
-        //Serial.print((float)myIMU.sumCount/myIMU.sum, 2);
-        //Serial.println(" Hz");
-      }
-      myIMU.count = millis();
-      myIMU.sumCount = 0;
-      myIMU.sum = 0;
-    } // if (myIMU.delt_t > 500)
-  } // if (AHRS)
-
-  //Transform a int to char array
-  String stringOne;
-  char charBuf[96];
-
-  stringOne = String((int)millis() + ",");
-  stringOne = stringOne + String((int)1000*myIMU.ax) + "," + String((int)1000*myIMU.ay) + "," + String((int)1000*myIMU.az) + ",";
-  stringOne = stringOne + String(myIMU.gx) + "," + String(myIMU.gy) + "," + String(myIMU.gz) + ",";
-  stringOne = stringOne + String(myIMU.mx) + "," + String(myIMU.my) + "," + String(myIMU.mz);
-
-  stringOne.toCharArray(charBuf, 96);
-
-  if (millis() - lastLogTime >= logInterval) {
-    File dataFile = SD.open("telem.txt", FILE_WRITE);
-    dataFile.println(charBuf);
-    dataFile.close();
-
-    //start UDP stream if active
-    if(stream) {
-      Udp.beginPacket(IP_Remote,4445);
-      Udp.write(charBuf);
-      Udp.endPacket();
-      }
-      lastLogTime = millis();
   }
+}
+
+void initSDcard() {
+  if (logToSD){
+  Serial.print("\nInitializing SD card...");
+    // we'll use the initialization code from the utility libraries
+    // since we're just testing if the card is working!
+    if (!card.init(SPI_HALF_SPEED, chipSelect)) {
+      Serial.println("initialization failed. Things to check:");
+      Serial.println("* is a card inserted?");
+      Serial.println("* is your wiring correct?");
+      Serial.println("* did you change the chipSelect pin to match your shield or module?");
+      digitalWrite(outLed, HIGH);
+      return;
+    } else {
+      Serial.println("Wiring is correct and a card is present.");
+    }
+
+    // print the type of card
+    Serial.print("\nCard type: ");
+    switch (card.type()) {
+      case SD_CARD_TYPE_SD1:
+        Serial.println("SD1");
+      break;
+      case SD_CARD_TYPE_SD2:
+        Serial.println("SD2");
+      break;
+      case SD_CARD_TYPE_SDHC:
+      Serial.println("SDHC");
+      break;
+      default:
+        Serial.println("Unknown");
+      }
+
+      // Now we will try to open the 'volume'/'partition' - it should be FAT16 or FAT32
+      if (!volume.init(card)) {
+        Serial.println("Could not find FAT16/FAT32 partition.\nMake sure you've formatted the card");
+        return;
+      }
 
 
+      // print the type and size of the first FAT-type volume
+      uint32_t volumesize;
+      Serial.print("\nVolume type is FAT");
+      Serial.println(volume.fatType(), DEC);
+      Serial.println();
+
+      volumesize = volume.blocksPerCluster();    // clusters are collections of blocks
+      volumesize *= volume.clusterCount();       // we'll have a lot of clusters
+      volumesize *= 512;                            // SD card blocks are always 512 bytes
+      Serial.print("Volume size (bytes): ");
+      Serial.println(volumesize);
+      Serial.print("Volume size (Kbytes): ");
+      volumesize /= 1024;
+      Serial.println(volumesize);
+      Serial.print("Volume size (Mbytes): ");
+      volumesize /= 1024;
+      Serial.println(volumesize);
+
+
+      Serial.println("\nFiles found on the card (name, date and size in bytes): ");
+      root.openRoot(volume);
+
+      // list all files in the card with date and size
+      root.ls(LS_R | LS_DATE | LS_SIZE);
+
+      if (!SD.begin(chipSelect)) {
+        Serial.println("Card failed, or not present");
+        // don't do anything more:
+        return;
+      }
+      Serial.println("card initialized.");
+    }
 }
