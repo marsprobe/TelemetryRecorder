@@ -25,13 +25,13 @@ String stringOne;
 char charBuf[96];
 IPAddress timeServerIP;
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 String logFile;
 
 //Configuration parameters:
 const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream live data to
 const char* ntpServerName = "ro.pool.ntp.org"; //NTP time server
-const unsigned int localUdpPort = 4210; //UDP port to stream data
+const unsigned int localUdpPort = 4210; //UDP local port
 const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
 const bool logToSD = 1; //if set to 1 start logging data to SD card
 #define SerialDebug false  // Set to true to get Serial output for debugging
@@ -51,13 +51,13 @@ void setup()
 
   //Connect to Wifi
   connWiFi();
+  delay(2000);
 
   //Query NTP and set local time
-  queryNTP ();
+  queryNTP();
 
   //Initialize i2c pins
   Wire.begin(i2cSDA,i2cSCL);
-
 
   // Set up the interrupt pin, its set as active high, push-pull
   pinMode(intPin, INPUT);
@@ -71,8 +71,10 @@ void setup()
   //If we log to SD card then initialize it
   if(logToSD){
     initSDcard();
-    logFile = String(now()) + ".log";
-  }
+    logFile = String(now()).substring(0,7) + ".log";
+    Serial.print("Writing to file: ");
+    Serial.println(logFile);
+    }
 }
 
 void loop()
@@ -122,7 +124,6 @@ void connWiFi() {
       Serial.println();
       Serial.print("Connected, IP address: ");
       Serial.println(WiFi.localIP());
-      //Query NTP and set local time
       break;
     }
     delay(500);
@@ -429,8 +430,7 @@ void initSDcard() {
 }
 
 // send an NTP request to the time server at the given address
-unsigned long sendNTPpacket(IPAddress& address)
-{
+unsigned long sendNTPpacket(IPAddress& address) {
   Serial.println("sending NTP packet...");
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
@@ -454,8 +454,10 @@ unsigned long sendNTPpacket(IPAddress& address)
 }
 
 void queryNTP (){
+
+
   if(WiFi.status() != WL_CONNECTED){
-    Serial.println("We are not connected to WiFi not syncing to NTP.");
+    Serial.println("We are not connected to WiFi, not syncing to NTP.");
     return;
   }
   //get a random server from the pool
@@ -466,16 +468,21 @@ void queryNTP (){
   Serial.print(" -> ");
   Serial.println(timeServerIP);
 
+  Serial.println("Starting UDP");
+  Udp.begin(localUdpPort);
+  Serial.print("Local port: ");
+  Serial.println(Udp.localPort());
+
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
   // wait to see if a reply is available
   delay(1000);
   int cb;
   int ntpRetries = 7;
-  Serial.println("Waiting for NTP server");
+  Serial.print("Waiting for NTP server");
   while (!cb && ntpRetries > 0) {
     Serial.print(".");
     cb = Udp.parsePacket();
-    delay(1000);
+    delay(500);
     ntpRetries--;
   }
   if(cb) {
@@ -527,6 +534,7 @@ void queryNTP (){
     Serial.print("System time is: ");
     Serial.println(now());
   }
+  Serial.println("");
 }
 
 void countMillis() {
