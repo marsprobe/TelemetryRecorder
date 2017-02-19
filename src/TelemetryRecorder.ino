@@ -15,8 +15,10 @@ const int i2cSDA = D4; //i2c SDA pin
 const int i2cSCL = D2; //i2c SCL pin
 
 //Declare Variables
-const long logInterval = 60; //interval in milisec to log/stream data
+const long logInterval = 100; //interval in milisec to log/stream data
 long lastLogTime = 0;
+const long wifiReconnInterval = 30000; //Interval for scanning the network and trying to reconnect
+long lastWifiReconn = 0;
 bool ledState = 0;
 int wifiRetry;
 String stringOne;
@@ -24,14 +26,15 @@ char charBuf[96];
 IPAddress timeServerIP;
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+String logFile;
 
 //Configuration parameters:
-const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream data to
-const char* ntpServerName = "time.nist.gov"; //NTP time server
+const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream live data to
+const char* ntpServerName = "pool.ntp.org"; //NTP time server
 const unsigned int localUdpPort = 4210; //UDP port to stream data
 const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
-const bool logToSD = 0; //if set to 1 start logging data to SD card
-#define SerialDebug true  // Set to true to get Serial output for debugging
+const bool logToSD = 1; //if set to 1 start logging data to SD card
+#define SerialDebug false  // Set to true to get Serial output for debugging
 
 //Initialize libraries
 WiFiUDP Udp;
@@ -45,7 +48,11 @@ void setup()
 {
   Serial.begin(38400);
   pinMode(outLed, OUTPUT);
-  connWiFi();
+
+  //Query NTP and set local time
+  queryNTP ();
+
+  //Initialize i2c pins
   Wire.begin(i2cSDA,i2cSCL);
 
 
@@ -55,20 +62,24 @@ void setup()
   pinMode(outLed, OUTPUT);
   digitalWrite(outLed, HIGH);
 
+  //Initialize the MPU 9250
   startMPU9250();
+
+  //If we log to SD card then initialize it
   if(logToSD){
     initSDcard();
+    logFile = String(now()) + ".log";
   }
-
-  queryNTP ();
-  Serial.print("System time is: ");
-  Serial.println(now());
-
-
 }
 
 void loop()
 {
+  if (millis() - lastLogTime >= wifiReconnInterval) {
+    //Connect to Wifi
+    connWiFi();
+    lastWifiReconn = millis();
+  }
+
   getMPU9250values();
 
   stringOne = String(now()) + ",";
@@ -79,7 +90,7 @@ void loop()
 
   if (millis() - lastLogTime >= logInterval) {
     if (logToSD) {
-      File dataFile = SD.open("telem.txt", FILE_WRITE);
+      File dataFile = SD.open(logFile, FILE_WRITE);
       dataFile.println(charBuf);
       dataFile.close();
     }
@@ -92,7 +103,7 @@ void loop()
     lastLogTime = millis();
     toggleLed();
     if(SerialDebug) {
-      Serial.println(charBuf);
+      //Serial.println(charBuf);
     }
   }
 }
@@ -100,18 +111,37 @@ void loop()
 
 //Start functions definition
 void connWiFi() {
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting");
-  for (wifiRetry = 0; wifiRetry < 4; wifiRetry++) {
-    if (WiFi.status() == WL_CONNECTED) {
-      wifiRetry = 0;
-      Serial.println();
-      Serial.print("Connected, IP address: ");
-      Serial.println(WiFi.localIP());
-      break;
+  if(WiFi.status() != WL_CONNECTED){
+    if(WiFi.scanComplete() == -2) {
+      Serial.println("Starting network scan....");
+      WiFi.scanNetworks(1, 1);
     }
-    delay(500);
-    Serial.print(".");
+
+    int networksFound = WiFi.scanComplete();
+    if(networksFound > 0){
+      for (int i = 0; i < networksFound; i++) {
+        Serial.println(WiFi.SSID(i));
+        if(WiFi.SSID(i) == String(ssid)) {
+          Serial.print(ssid);
+          Serial.println(" is in range");
+
+          WiFi.begin(ssid, password);
+          Serial.print("Connecting");
+          for (wifiRetry = 0; wifiRetry < 10; wifiRetry++) {
+            if (WiFi.status() == WL_CONNECTED) {
+              wifiRetry = 0;
+              Serial.println();
+              Serial.print("Connected, IP address: ");
+              Serial.println(WiFi.localIP());
+              break;
+            }
+            delay(500);
+            Serial.print(".");
+          }
+        }
+      }
+      WiFi.scanDelete();
+    }
   }
 }
 
@@ -326,10 +356,7 @@ void initSDcard() {
     // we'll use the initialization code from the utility libraries
     // since we're just testing if the card is working!
     if (!card.init(SPI_HALF_SPEED, chipSelect)) {
-      Serial.println("initialization failed. Things to check:");
-      Serial.println("* is a card inserted?");
-      Serial.println("* is your wiring correct?");
-      Serial.println("* did you change the chipSelect pin to match your shield or module?");
+      Serial.println("initialization failed. No SD logging.");
       digitalWrite(outLed, HIGH);
       return;
     } else {
@@ -419,6 +446,10 @@ unsigned long sendNTPpacket(IPAddress& address)
 }
 
 void queryNTP (){
+  if(WiFi.status() != WL_CONNECTED){
+    Serial.println("We are not connected to WiFi not syncing to NTP.");
+    return;
+  }
   //get a random server from the pool
   WiFi.hostByName(ntpServerName, timeServerIP);
 
@@ -484,5 +515,14 @@ void queryNTP (){
 
     //Set system time
     setTime(epoch);
+
+    Serial.print("System time is: ");
+    Serial.println(now());
   }
+}
+
+void countMillis() {
+  //Will be used to add millilisec support
+
+
 }
