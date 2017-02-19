@@ -30,7 +30,7 @@ String logFile;
 
 //Configuration parameters:
 const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream live data to
-const char* ntpServerName = "pool.ntp.org"; //NTP time server
+const char* ntpServerName = "ro.pool.ntp.org"; //NTP time server
 const unsigned int localUdpPort = 4210; //UDP port to stream data
 const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
 const bool logToSD = 1; //if set to 1 start logging data to SD card
@@ -48,6 +48,9 @@ void setup()
 {
   Serial.begin(38400);
   pinMode(outLed, OUTPUT);
+
+  //Connect to Wifi
+  connWiFi();
 
   //Query NTP and set local time
   queryNTP ();
@@ -74,9 +77,9 @@ void setup()
 
 void loop()
 {
-  if (millis() - lastLogTime >= wifiReconnInterval) {
-    //Connect to Wifi
-    connWiFi();
+  if (millis() - lastWifiReconn >= wifiReconnInterval) {
+    //Scan for our SSID and if in range Connect to Wifi
+    scanForSSID();
     lastWifiReconn = millis();
   }
 
@@ -111,6 +114,24 @@ void loop()
 
 //Start functions definition
 void connWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting");
+  for (wifiRetry = 0; wifiRetry < 10; wifiRetry++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiRetry = 0;
+      Serial.println();
+      Serial.print("Connected, IP address: ");
+      Serial.println(WiFi.localIP());
+      //Query NTP and set local time
+      break;
+    }
+    delay(500);
+    Serial.print(".");
+  }
+
+}
+
+void scanForSSID() {
   if(WiFi.status() != WL_CONNECTED){
     if(WiFi.scanComplete() == -2) {
       Serial.println("Starting network scan....");
@@ -120,24 +141,11 @@ void connWiFi() {
     int networksFound = WiFi.scanComplete();
     if(networksFound > 0){
       for (int i = 0; i < networksFound; i++) {
-        Serial.println(WiFi.SSID(i));
         if(WiFi.SSID(i) == String(ssid)) {
           Serial.print(ssid);
           Serial.println(" is in range");
-
-          WiFi.begin(ssid, password);
-          Serial.print("Connecting");
-          for (wifiRetry = 0; wifiRetry < 10; wifiRetry++) {
-            if (WiFi.status() == WL_CONNECTED) {
-              wifiRetry = 0;
-              Serial.println();
-              Serial.print("Connected, IP address: ");
-              Serial.println(WiFi.localIP());
-              break;
-            }
-            delay(500);
-            Serial.print(".");
-          }
+          connWiFi();
+          queryNTP ();
         }
       }
       WiFi.scanDelete();
@@ -462,10 +470,10 @@ void queryNTP (){
   // wait to see if a reply is available
   delay(1000);
   int cb;
-  int ntpRetries = 5;
+  int ntpRetries = 7;
+  Serial.println("Waiting for NTP server");
   while (!cb && ntpRetries > 0) {
-    Serial.print("no packet yet ");
-    Serial.println(ntpRetries);
+    Serial.print(".");
     cb = Udp.parsePacket();
     delay(1000);
     ntpRetries--;
