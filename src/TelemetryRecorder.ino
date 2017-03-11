@@ -7,12 +7,7 @@
 #include <TimeLib.h>
 
 
-// Pin definitions
-const int intPin = D6;  // These can be changed, 2 and 3 are the Arduinos ext int pins
-const int outLed = D1; //Led used for signaling stuff
-const int chipSelect = D8;  //used for CS SDcard
-const int i2cSDA = D4; //i2c SDA pin
-const int i2cSCL = D2; //i2c SCL pin
+
 
 //Declare Variables
 const long logInterval = 100; //interval in milisec to log/stream data
@@ -27,6 +22,15 @@ IPAddress timeServerIP;
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 String logFile;
+byte secondDS, minuteDS, hourDS, dayOfWeekDS, dayOfMonthDS, monthDS, yearDS;
+
+
+// Pin definitions
+const int intPin = D6;  // These can be changed, 2 and 3 are the Arduinos ext int pins
+const int outLed = D1; //Led used for signaling stuff
+const int chipSelect = D8;  //used for CS SDcard
+const int i2cSDA = D2; //i2c SDA pin
+const int i2cSCL = D4; //i2c SCL pin
 
 //Configuration parameters:
 const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream live data to
@@ -34,7 +38,9 @@ const char* ntpServerName = "ro.pool.ntp.org"; //NTP time server
 const unsigned int localUdpPort = 4210; //UDP local port
 const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
 const bool logToSD = 1; //if set to 1 start logging data to SD card
-#define SerialDebug false  // Set to true to get Serial output for debugging
+#define SerialDebug true  // Set to true to get Serial output for debugging
+
+#define DS3231_I2C_ADDRESS 0x68
 
 //Initialize libraries
 WiFiUDP Udp;
@@ -52,6 +58,20 @@ void setup()
   //Connect to Wifi
   connWiFi();
   delay(2000);
+
+  // set the initial time here:
+  // DS3231 seconds, minutes, hours, day, date, month, year
+  // setDS3231time(30,21,00,5,25,02,17);
+  readDS3231time(&secondDS, &minuteDS, &hourDS, &dayOfWeekDS, &dayOfMonthDS, &monthDS,  &yearDS);
+  setTime(hourDS,minuteDS,secondDS,dayOfMonthDS,monthDS,yearDS);
+  time_t t = now();
+  Serial.print(second(t));
+  Serial.print(hour(t));
+  Serial.print(minute(t));
+  Serial.print(weekday(t));
+  Serial.print(day(t));
+  Serial.print(month(t));
+  Serial.println(year(t) - 2000);
 
   //Query NTP and set local time
   queryNTP();
@@ -98,6 +118,9 @@ void loop()
       File dataFile = SD.open(logFile, FILE_WRITE);
       dataFile.println(charBuf);
       dataFile.close();
+      if(SerialDebug) {
+        //Serial.println(charBuf);
+      }
     }
     //start UDP stream if active
     if (stream) {
@@ -453,9 +476,8 @@ unsigned long sendNTPpacket(IPAddress& address) {
   Udp.endPacket();
 }
 
+//Get NTP time and update the DS3231 RTC
 void queryNTP (){
-
-
   if(WiFi.status() != WL_CONNECTED){
     Serial.println("We are not connected to WiFi, not syncing to NTP.");
     return;
@@ -533,12 +555,122 @@ void queryNTP (){
 
     Serial.print("System time is: ");
     Serial.println(now());
+    time_t t = now();
+    setDS3231time(second(t),minute(t),hour(t),weekday(t),day(t),month(t),year(t) - 2000);
+    Serial.print(second(t));
+    Serial.print(hour(t));
+    Serial.print(minute(t));
+    Serial.print(weekday(t));
+    Serial.print(day(t));
+    Serial.print(month(t));
+    Serial.println(year(t) - 2000);
   }
   Serial.println("");
 }
 
 void countMillis() {
   //Will be used to add millilisec support
+}
 
+// Convert normal decimal numbers to binary coded decimal
+byte decToBcd(byte val)
+{
+  return( (val/10*16) + (val%10) );
+}
 
+// Convert binary coded decimal to normal decimal numbers
+byte bcdToDec(byte val)
+{
+  return( (val/16*10) + (val%16) );
+}
+
+//DS3231 functions
+void setDS3231time(byte second, byte minute, byte hour, byte dayOfWeek, byte
+dayOfMonth, byte month, byte year)
+{
+  // sets time and date data to DS3231
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set next input to start at the seconds register
+  Wire.write(decToBcd(second)); // set seconds
+  Wire.write(decToBcd(minute)); // set minutes
+  Wire.write(decToBcd(hour)); // set hours
+  Wire.write(decToBcd(dayOfWeek)); // set day of week (1=Sunday, 7=Saturday)
+  Wire.write(decToBcd(dayOfMonth)); // set date (1 to 31)
+  Wire.write(decToBcd(month)); // set month
+  Wire.write(decToBcd(year)); // set year (0 to 99)
+  Wire.endTransmission();
+}
+void readDS3231time(byte *second,
+byte *minute,
+byte *hour,
+byte *dayOfWeek,
+byte *dayOfMonth,
+byte *month,
+byte *year)
+{
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set DS3231 register pointer to 00h
+  Wire.endTransmission();
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
+  // request seven bytes of data from DS3231 starting from register 00h
+  *second = bcdToDec(Wire.read() & 0x7f);
+  *minute = bcdToDec(Wire.read());
+  *hour = bcdToDec(Wire.read() & 0x3f);
+  *dayOfWeek = bcdToDec(Wire.read());
+  *dayOfMonth = bcdToDec(Wire.read());
+  *month = bcdToDec(Wire.read());
+  *year = bcdToDec(Wire.read());
+}
+
+//display time from DS3231
+void displayTime()
+{
+  byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
+  // retrieve data from DS3231
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,  &year);
+  // send it to the serial monitor
+  Serial.print(hour, DEC);
+  // convert the byte variable to a decimal number when displayed
+  Serial.print(":");
+  if (minute<10)
+  {
+    Serial.print("0");
+  }
+  Serial.print(minute, DEC);
+  Serial.print(":");
+  if (second<10)
+  {
+    Serial.print("0");
+  }
+  Serial.print(second, DEC);
+  Serial.print(" ");
+  Serial.print(dayOfMonth, DEC);
+  Serial.print("/");
+  Serial.print(month, DEC);
+  Serial.print("/");
+  Serial.print(year, DEC);
+  Serial.print(" Day of week: ");
+  switch(dayOfWeek){
+  case 1:
+    Serial.println("Sunday");
+    break;
+  case 2:
+    Serial.println("Monday");
+    break;
+  case 3:
+    Serial.println("Tuesday");
+    break;
+  case 4:
+    Serial.println("Wednesday");
+    break;
+  case 5:
+    Serial.println("Thursday");
+    break;
+  case 6:
+    Serial.println("Friday");
+    break;
+  case 7:
+    Serial.println("Saturday");
+    break;
+  }
 }
