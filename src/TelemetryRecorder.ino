@@ -6,15 +6,13 @@
 #include <config.h>
 #include <TimeLib.h>
 
-
-
-
 //Declare Variables
 const long logInterval = 100; //interval in milisec to log/stream data
 long lastLogTime = 0;
 const long wifiReconnInterval = 30000; //Interval for scanning the network and trying to reconnect
 long lastWifiReconn = 0;
 bool ledState = 0;
+bool MPUonline = 0;
 int wifiRetry;
 String stringOne;
 char charBuf[96];
@@ -22,8 +20,13 @@ IPAddress timeServerIP;
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 String logFile;
-byte secondDS, minuteDS, hourDS, dayOfWeekDS, dayOfMonthDS, monthDS, yearDS;
-
+byte secondDS = 0;
+byte minuteDS = 0;
+byte hourDS = 0;
+byte dayOfWeekDS = 0;
+byte dayOfMonthDS = 0;
+byte monthDS = 0;
+byte yearDS = 0;
 
 // Pin definitions
 const int intPin = D6;  // These can be changed, 2 and 3 are the Arduinos ext int pins
@@ -36,8 +39,9 @@ const int i2cSCL = D4; //i2c SCL pin
 const IPAddress IP_Remote(172, 16, 0, 10); //IP address to stream live data to
 const char* ntpServerName = "ro.pool.ntp.org"; //NTP time server
 const unsigned int localUdpPort = 4210; //UDP local port
-const bool stream = 1; //if set to 1 start streaming UDP to IP_Remote
+const bool stream = 0; //if set to 1 start streaming UDP to IP_Remote
 const bool logToSD = 1; //if set to 1 start logging data to SD card
+const bool wifiON = 1; //if 0 then don't connect to WiFi
 #define SerialDebug true  // Set to true to get Serial output for debugging
 
 #define DS3231_I2C_ADDRESS 0x68
@@ -55,29 +59,56 @@ void setup()
   Serial.begin(38400);
   pinMode(outLed, OUTPUT);
 
+  //Initialize i2c pins
+  Wire.begin(i2cSDA,i2cSCL);
+
   //Connect to Wifi
-  connWiFi();
-  delay(2000);
+  if (wifiON) {
+    connWiFi();
+    delay(500);
+  }
 
   // set the initial time here:
   // DS3231 seconds, minutes, hours, day, date, month, year
   // setDS3231time(30,21,00,5,25,02,17);
   readDS3231time(&secondDS, &minuteDS, &hourDS, &dayOfWeekDS, &dayOfMonthDS, &monthDS,  &yearDS);
+  if (SerialDebug) {
+    Serial.print("DS3231 time: ");
+    Serial.print(hourDS, DEC);
+    Serial.print(":");
+    Serial.print(minuteDS, DEC);
+    Serial.print(":");
+    Serial.print(secondDS, DEC);
+    Serial.print(" Weekday:");
+    Serial.print(dayOfWeekDS, DEC);
+    Serial.print(" Day:");
+    Serial.print(dayOfMonthDS, DEC);
+    Serial.print(" Month:");
+    Serial.print(monthDS, DEC);
+    Serial.print(" Year:");
+    Serial.println(yearDS, DEC);
+  }
   setTime(hourDS,minuteDS,secondDS,dayOfMonthDS,monthDS,yearDS);
   time_t t = now();
-  Serial.print(second(t));
-  Serial.print(hour(t));
-  Serial.print(minute(t));
-  Serial.print(weekday(t));
-  Serial.print(day(t));
-  Serial.print(month(t));
-  Serial.println(year(t) - 2000);
-
+  if (SerialDebug){
+    Serial.print("System time: ");
+    Serial.print(hour(t));
+    Serial.print(":");
+    Serial.print(minute(t));
+    Serial.print(":");
+    Serial.print(second(t));
+    Serial.print(" Weekday:");
+    Serial.print(weekday(t));
+    Serial.print(" Day:");
+    Serial.print(day(t));
+    Serial.print(" Month:");
+    Serial.print(month(t));
+    Serial.print(" Year:");
+    Serial.println(year(t) - 2000);
+  }
   //Query NTP and set local time
   queryNTP();
 
-  //Initialize i2c pins
-  Wire.begin(i2cSDA,i2cSCL);
 
   // Set up the interrupt pin, its set as active high, push-pull
   pinMode(intPin, INPUT);
@@ -105,7 +136,9 @@ void loop()
     lastWifiReconn = millis();
   }
 
-  getMPU9250values();
+  if (MPUonline){
+    getMPU9250values();
+  }
 
   stringOne = String(now()) + ",";
   stringOne = stringOne + String((int)1000*myIMU.ax) + "," + String((int)1000*myIMU.ay) + "," + String((int)1000*myIMU.az) + ",";
@@ -197,6 +230,7 @@ void startMPU9250 () {
   if (c == 0x71) // WHO_AM_I should always be 0x68
   {
     Serial.println("MPU9250 is online...");
+    MPUonline = 1;
 
     // Start by performing self test and reporting values
     myIMU.MPU9250SelfTest(myIMU.SelfTest);
@@ -246,7 +280,7 @@ void startMPU9250 () {
   {
     Serial.print("Could not connect to MPU9250: 0x");
     Serial.println(c, HEX);
-    while(1) ; // Loop forever if communication doesn't happen
+    //while(1) ; // Loop forever if communication doesn't happen
   }
   delay(3000);
   Serial.println("ax,ay,az,gx,gy,gz,mx,my,mz,q0,qx,qy,qz,yaw,pitch,roll,rate");
@@ -308,11 +342,13 @@ void getMPU9250values() {
   // Serial print and/or display at 0.5 s rate independent of data rates
   myIMU.delt_t = millis() - myIMU.count;
 
-  // print to serial once per half-second independent of read rate
-  if (myIMU.delt_t > 500)
+  // print to serial once per second independent of read rate
+  if (myIMU.delt_t > 1000)
   {
     if(SerialDebug)
     {
+      Serial.print(now());
+      Serial.print(" ");
       Serial.print((int)1000*myIMU.ax);
       Serial.print("  ");
       Serial.print((int)1000*myIMU.ay);
@@ -600,13 +636,7 @@ dayOfMonth, byte month, byte year)
   Wire.write(decToBcd(year)); // set year (0 to 99)
   Wire.endTransmission();
 }
-void readDS3231time(byte *second,
-byte *minute,
-byte *hour,
-byte *dayOfWeek,
-byte *dayOfMonth,
-byte *month,
-byte *year)
+void readDS3231time(byte *second,byte *minute,byte *hour,byte *dayOfWeek,byte *dayOfMonth,byte *month,byte *year)
 {
   Wire.beginTransmission(DS3231_I2C_ADDRESS);
   Wire.write(0); // set DS3231 register pointer to 00h
