@@ -27,6 +27,14 @@ byte dayOfWeekDS = 0;
 byte dayOfMonthDS = 0;
 byte monthDS = 0;
 byte yearDS = 0;
+#define FTPWRITE
+char outBuf[128];
+char outCount;
+//FTP stuff
+const char* host = "172.16.0.12";
+const char* userName = "telem1";
+const char* passwordFTP = "telem12345";
+String fileName;
 
 // Pin definitions
 const int intPin = D6;  // These can be changed, 2 and 3 are the Arduinos ext int pins
@@ -53,6 +61,9 @@ MPU9250 myIMU;
 Sd2Card card;
 SdVolume volume;
 SdFile root;
+WiFiClient client;
+WiFiClient dclient;
+
 
 void setup()
 {
@@ -702,5 +713,170 @@ void displayTime()
   case 7:
     Serial.println("Saturday");
     break;
+  }
+}
+
+byte doFTP()
+{
+    File fh = SD.open(fileName, FILE_READ);
+    if (!fh) {
+      Serial.println("file open failed");
+    }
+  if (client.connect(host,21)) {
+    client.setNoDelay(1);
+    Serial.println(F("Command connected"));
+  }
+  else {
+    fh.close();
+    Serial.println(F("Command connection failed"));
+    return 0;
+  }
+  if(!eRcv()) return 0;
+  client.print("USER ");
+  client.println(userName);
+  if(!eRcv()) return 0;
+  client.print("PASS ");
+  client.println(passwordFTP);
+  if(!eRcv()) return 0;
+  client.println("SYST");
+  if(!eRcv()) return 0;
+  client.println("Type I");
+  if(!eRcv()) return 0;
+  client.println("PASV");
+  if(!eRcv()) return 0;
+  char *tStr = strtok(outBuf,"(,");
+  int array_pasv[6];
+  for ( int i = 0; i < 6; i++) {
+    tStr = strtok(NULL,"(,");
+    array_pasv[i] = atoi(tStr);
+    if(tStr == NULL)
+    {
+      Serial.println(F("Bad PASV Answer"));
+
+    }
+  }
+
+  unsigned int hiPort,loPort;
+  hiPort=array_pasv[4]<<8;
+  loPort=array_pasv[5]&255;
+  Serial.print(F("Data port: "));
+  hiPort = hiPort|loPort;
+  Serial.println(hiPort);
+  if(dclient.connect(host, hiPort)){
+    Serial.println("Data connected");
+  }
+  else{
+    Serial.println("Data connection failed");
+    client.stop();
+    fh.close();
+  }
+  client.print("STOR ");
+  client.println(fileName);
+  if(!eRcv())
+  {
+    dclient.stop();
+    return 0;
+  }
+  Serial.println(F("Writing"));
+  byte clientBuf[64];
+  int clientCount = 0;
+  while(fh.available())
+  {
+    clientBuf[clientCount] = fh.read();
+    clientCount++;
+
+    if(clientCount > 63)
+    {
+      dclient.write((const uint8_t *)clientBuf, 64);
+      clientCount = 0;
+    }
+  }
+  if(clientCount > 0) dclient.write((const uint8_t *)clientBuf, clientCount);
+  dclient.stop();
+  Serial.println(F("Data disconnected"));
+  client.println();
+  if(!eRcv()) return 0;
+  client.println("QUIT");
+  if(!eRcv()) return 0;
+  client.stop();
+  Serial.println(F("Command disconnected"));
+  fh.close();
+  Serial.println(F("File closed"));
+  return 1;
+}
+
+byte eRcv()
+{
+  byte respCode;
+  byte thisByte;
+  while(!client.available()) delay(1);
+  respCode = client.peek();
+  outCount = 0;
+  while(client.available())
+  {
+    thisByte = client.read();
+    Serial.write(thisByte);
+
+    if(outCount < 127)
+    {
+      outBuf[outCount] = thisByte;
+      outCount++;
+      outBuf[outCount] = 0;
+    }
+  }
+  if(respCode >= '4')
+  {
+    efail();
+    return 0;
+  }
+
+  return 1;
+}
+
+void efail()
+{
+  byte thisByte = 0;
+  client.println(F("QUIT"));
+  while(!client.available()) delay(1);
+  while(client.available())
+  {
+    thisByte = client.read();
+    Serial.write(thisByte);
+  }
+  client.stop();
+  Serial.println(F("Command disconnected"));
+}
+
+//Upload all LOG files to FTP server; the remove function does not work
+void uploadFiles() {
+  File root = SD.open("/");
+  while(true) {
+    File entry = root.openNextFile();
+    if (! entry) {
+      // no more files
+      Serial.println("Done uploading files.");
+      break;
+    }
+    fileName = entry.name();
+    long fileSize = entry.size();
+    Serial.println(fileName);
+    //Get the index of the dot
+    int dotPos = fileName.indexOf(".");
+    //Check if the file is a LOG file and upload it
+    if (fileName.substring(dotPos + 1) == "LOG") {
+      Serial.print("Uploading: ");
+      Serial.print(fileName);
+      Serial.print("\t\t Size: ");
+      Serial.println(fileSize, DEC);
+      if(doFTP()) {
+        entry.close();
+        Serial.println(F("FTP OK"));
+        Serial.print("Deleting: ");
+        Serial.println(fileName);
+        //SD.remove(fileName);
+        }
+      else Serial.println(F("FTP FAIL"));
+    }
+
   }
 }
