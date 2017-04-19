@@ -849,7 +849,9 @@ void efail()
 
 //Upload all LOG files to FTP server; the remove function does not work
 void uploadFiles() {
+  SD.begin(chipSelect);
   File root = SD.open("/");
+  delay(1000);
   while(true) {
     File entry = root.openNextFile();
     if (! entry) {
@@ -873,10 +875,15 @@ void uploadFiles() {
         Serial.println(F("FTP OK"));
         Serial.print("Deleting: ");
         Serial.println(fileName);
-        //SD.remove(fileName);
+        fileName = fileName + '\0';
+        char charBuf[fileName.length()];
+        fileName.toCharArray(charBuf, fileName.length());
+        if (SD.remove(charBuf)) {
+          Serial.print("Deleted ");
+          Serial.println(fileName);
         }
       else Serial.println(F("FTP FAIL"));
+      }
     }
-
   }
 }
