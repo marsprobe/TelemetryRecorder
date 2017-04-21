@@ -9,6 +9,7 @@ The basic ideea is to place the platform on a motorbike/car and have it record a
 - use the RTC module for time reference when outside of WiFi range
 
 #Components used:
+
 - ESP8266 Wemos Mini D1
 - MPU9250
 - DS3231 RTC Module
@@ -16,6 +17,7 @@ The basic ideea is to place the platform on a motorbike/car and have it record a
 - Voltage regulator (not yet determined)
 
 #TODO
+
 - Control debug serial OUTPUT
 - Add voltage measurement support
 - Watchdog implementation ?
