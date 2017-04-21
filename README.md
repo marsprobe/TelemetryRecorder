@@ -8,7 +8,7 @@ The basic ideea is to place the platform on a motorbike/car and have it record a
 - sync its clock with an NTP server and set the time on the RTC module
 - use the RTC module for time reference when outside of WiFi range
 
-#Components used:
+# Components used:
 
 - ESP8266 Wemos Mini D1
 - MPU9250
@@ -16,7 +16,7 @@ The basic ideea is to place the platform on a motorbike/car and have it record a
 - Micro SD Shield for WeMos D1 mini TF
 - Voltage regulator (not yet determined)
 
-#TODO
+# TODO
 
 - Control debug serial OUTPUT
 - Add voltage measurement support
